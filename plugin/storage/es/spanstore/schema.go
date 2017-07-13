@@ -35,7 +35,7 @@ const mapping = `{
             "enabled":false
          }
       },
-      %s:%s
+      "%s":%s
    }
 }`
 
