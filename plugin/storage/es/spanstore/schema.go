@@ -35,14 +35,15 @@ const mapping = `{
             "enabled":false
          }
       },
-      %s
+      %s:%s
    }
 }`
 
 var (
 	spanMapping = fmt.Sprintf(
 		mapping,
-		`"span":{
+		spanType,
+		`{
 		 "properties":{
 		    "traceID":{
 		       "type":"keyword",
@@ -162,7 +163,8 @@ var (
 
 	serviceMapping = fmt.Sprintf(
 		mapping,
-		`"service":{
+		serviceType,
+		`{
 		 "properties":{
 		    "serviceName":{
 		       "type":"keyword",
