@@ -40,6 +40,7 @@ var (
 	errMissingCassandraConfig     = errors.New("Cassandra not configured")
 	errMissingMemoryStore         = errors.New("Memory Reader was not provided")
 	errMissingElasticSearchConfig = errors.New("ElasticSearch not configured")
+	errMissingInfluxConfig        = errors.New("InfluxDB not configured")
 )
 
 // NewStorageBuilder creates a StorageBuilder based off the flags that have been set
@@ -63,6 +64,11 @@ func NewStorageBuilder(opts ...basicB.Option) (StorageBuilder, error) {
 			return nil, errMissingElasticSearchConfig
 		}
 		return newESBuilder(options.ElasticSearch, options.Logger, options.MetricsFactory), nil
+	} else if flags.SpanStorage.Type == flags.InfluxDBStorageType {
+		if options.InfluxDB == nil {
+			return nil, errMissingInfluxConfig
+		}
+		return newinfluxDBStoreBuilder(options.InfluxDB, options.Logger, options.MetricsFactory), nil
 	}
 	return nil, flags.ErrUnsupportedStorageType
 }

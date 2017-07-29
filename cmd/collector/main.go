@@ -22,6 +22,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -42,6 +43,7 @@ import (
 	"github.com/uber/jaeger/cmd/collector/app/builder"
 	"github.com/uber/jaeger/cmd/collector/app/zipkin"
 	casFlags "github.com/uber/jaeger/cmd/flags/cassandra"
+	infFlags "github.com/uber/jaeger/cmd/flags/influxdb"
 )
 
 const (
@@ -51,14 +53,21 @@ const (
 func main() {
 	casOptions := casFlags.NewOptions()
 	casOptions.Bind(flag.CommandLine, "cassandra")
+
+	influxOptions := infFlags.NewOptions()
+	influxOptions.Bind(flag.CommandLine, "influx")
 	flag.Parse()
+
 	logger, _ := zap.NewProduction()
 	baseMetrics := xkit.Wrap(serviceName, expvar.NewFactory(10))
+
+	logger.Debug(fmt.Sprintf("%v\n", influxOptions.GetPrimary()))
 
 	spanBuilder, err := builder.NewSpanHandlerBuilder(
 		basicB.Options.CassandraOption(casOptions.GetPrimary()),
 		basicB.Options.LoggerOption(logger),
 		basicB.Options.MetricsFactoryOption(baseMetrics),
+		basicB.Options.InfluxDBOption(influxOptions.GetPrimary()),
 	)
 	if err != nil {
 		logger.Fatal("Unable to set up builder", zap.Error(err))

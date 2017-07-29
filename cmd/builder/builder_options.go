@@ -26,6 +26,7 @@ import (
 
 	cascfg "github.com/uber/jaeger/pkg/cassandra/config"
 	escfg "github.com/uber/jaeger/pkg/es/config"
+	influx "github.com/uber/jaeger/pkg/influxdb/config"
 	"github.com/uber/jaeger/storage/spanstore/memory"
 )
 
@@ -41,6 +42,8 @@ type BasicOptions struct {
 	MemoryStore *memory.Store
 	// ElasticSearch is the elasticsearch configuration used
 	ElasticSearch *escfg.Configuration
+
+	InfluxDB *influx.Configuration
 }
 
 // Option is a function that sets some option on StorageBuilder.
@@ -74,6 +77,12 @@ func (BasicOptions) CassandraOption(cassandra *cascfg.Configuration) Option {
 func (BasicOptions) MemoryStoreOption(memoryStore *memory.Store) Option {
 	return func(b *BasicOptions) {
 		b.MemoryStore = memoryStore
+	}
+}
+
+func (BasicOptions) InfluxDBOption(c *influx.Configuration) Option {
+	return func(b *BasicOptions) {
+		b.InfluxDB = c
 	}
 }
 

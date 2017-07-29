@@ -36,8 +36,12 @@ import (
 	cascfg "github.com/uber/jaeger/pkg/cassandra/config"
 	"github.com/uber/jaeger/pkg/es"
 	escfg "github.com/uber/jaeger/pkg/es/config"
+	"github.com/uber/jaeger/pkg/influxdb"
+	infcfg "github.com/uber/jaeger/pkg/influxdb/config"
 	casSpanstore "github.com/uber/jaeger/plugin/storage/cassandra/spanstore"
 	esSpanstore "github.com/uber/jaeger/plugin/storage/es/spanstore"
+	influxstore "github.com/uber/jaeger/plugin/storage/influxdb/spanstore"
+	"github.com/uber/jaeger/storage/dependencystore"
 	"github.com/uber/jaeger/storage/spanstore"
 	"github.com/uber/jaeger/storage/spanstore/memory"
 )
@@ -46,6 +50,7 @@ var (
 	errMissingCassandraConfig     = errors.New("Cassandra not configured")
 	errMissingMemoryStore         = errors.New("MemoryStore is not provided")
 	errMissingElasticSearchConfig = errors.New("ElasticSearch not configured")
+	errMissingInfluxDBConfig      = errors.New("InfluxDB not configured")
 )
 
 // SpanHandlerBuilder builds span (Jaeger and zipkin) handlers
@@ -71,6 +76,12 @@ func NewSpanHandlerBuilder(opts ...basicB.Option) (SpanHandlerBuilder, error) {
 			return nil, errMissingElasticSearchConfig
 		}
 		return newESBuilder(options.ElasticSearch, options.Logger, options.MetricsFactory), nil
+	} else if flags.SpanStorage.Type == flags.InfluxDBStorageType {
+		if options.InfluxDB == nil {
+			return nil, errMissingInfluxDBConfig
+		}
+
+		return newInfluxDBStoreBuilder(options.InfluxDB, options.Logger, options.MetricsFactory), nil
 	}
 	return nil, flags.ErrUnsupportedStorageType
 }
@@ -173,6 +184,51 @@ func (e *esSpanHandlerBuilder) getClient() (es.Client, error) {
 		return e.client, err
 	}
 	return e.client, nil
+}
+
+type influxDBStoreBuilder struct {
+	logger         *zap.Logger
+	metricsFactory metrics.Factory
+	conf           *infcfg.Configuration
+	store          *influxstore.SpanReader
+	client         influxdb.Client
+}
+
+func newInfluxDBStoreBuilder(conf *infcfg.Configuration, logger *zap.Logger, metricsFactory metrics.Factory) *influxDBStoreBuilder {
+	return &influxDBStoreBuilder{
+		logger:         logger,
+		metricsFactory: metricsFactory,
+		conf:           conf,
+	}
+
+}
+
+func (b *influxDBStoreBuilder) NewSpanReader() (spanstore.Reader, error) {
+	//return c.store, nil
+	client, err := b.getClient()
+	if err != nil {
+		return nil, err
+	}
+	// TODO: Change this to the writer when we have it
+	return influxstore.NewSpanReader(client), nil
+
+}
+
+func (b *influxDBStoreBuilder) NewDependencyReader() (dependencystore.Reader, error) {
+	return nil, nil
+}
+
+func (b *influxDBStoreBuilder) getClient() (influxdb.Client, error) {
+	if b.client == nil {
+		client, err := b.conf.NewClient()
+		b.client = client
+		return b.client, err
+	}
+	return b.client, nil
+}
+
+func (b *influxDBStoreBuilder) BuildHandlers() (app.ZipkinSpansHandler, app.JaegerBatchesHandler, error) {
+	return buildHandlers(b.store, b.logger, b.metricsFactory)
 }
 
 func buildHandlers(

@@ -34,6 +34,7 @@ import (
 
 	basicB "github.com/uber/jaeger/cmd/builder"
 	casFlags "github.com/uber/jaeger/cmd/flags/cassandra"
+	infFlags "github.com/uber/jaeger/cmd/flags/influxdb"
 	"github.com/uber/jaeger/cmd/query/app/builder"
 	"github.com/uber/jaeger/pkg/recoveryhandler"
 )
@@ -41,6 +42,10 @@ import (
 func main() {
 	casOptions := casFlags.NewOptions()
 	casOptions.Bind(flag.CommandLine, "cassandra", "cassandra.archive")
+
+	infOptions := infFlags.NewOptions()
+	infOptions.Bind(flag.CommandLine, "influxdb")
+
 	flag.Parse()
 
 	logger, _ := zap.NewProduction()
@@ -50,6 +55,7 @@ func main() {
 		basicB.Options.LoggerOption(logger),
 		basicB.Options.MetricsFactoryOption(metricsFactory),
 		basicB.Options.CassandraOption(casOptions.GetPrimary()),
+		basicB.Options.InfluxDBOption(infOptions.GetPrimary()),
 	)
 	if err != nil {
 		logger.Fatal("Failed to init storage builder", zap.Error(err))

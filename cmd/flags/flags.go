@@ -35,6 +35,8 @@ const (
 	MemoryStorageType = "memory"
 	// ESStorageType is the storage type flag denoting an ElasticSearch backing store
 	ESStorageType = "elasticsearch"
+
+	InfluxDBStorageType = "influxdb"
 )
 
 // ErrUnsupportedStorageType is the error when dealing with an unsupported storage type
@@ -72,9 +74,18 @@ func (co cassandraOptions) ServerList() []string {
 	return strings.Split(co.Servers, ",")
 }
 
-func init() {
-	flag.StringVar(&SpanStorage.Type, "span-storage.type", CassandraStorageType, fmt.Sprintf("The type of span storage backend to use, options are currently [%v,%v]", CassandraStorageType, MemoryStorageType))
+//var InfluxOptions = InfluxDBOptions{}
 
-	flag.StringVar(&DependencyStorage.Type, "dependency-storage.type", CassandraStorageType, fmt.Sprintf("The type of dependency storage backend to use, options are currently [%v,%v]", CassandraStorageType, MemoryStorageType))
+/*type InfluxDBOptions struct {
+	Username string
+	Password string
+	Host     string
+}*/
+
+func init() {
+	flag.StringVar(&SpanStorage.Type, "span-storage.type", CassandraStorageType, fmt.Sprintf("The type of span storage backend to use, options are currently [%v,%v,%v]", CassandraStorageType, MemoryStorageType, InfluxDBStorageType))
+
+	flag.StringVar(&DependencyStorage.Type, "dependency-storage.type", CassandraStorageType, fmt.Sprintf("The type of dependency storage backend to use, options are currently [%v,%v,%v]", CassandraStorageType, MemoryStorageType, InfluxDBStorageType))
 	flag.DurationVar(&DependencyStorage.DataFrequency, "dependency-storage.data-frequency", time.Hour*24, "Frequency of service dependency calculations")
+
 }
