@@ -210,7 +210,7 @@ func (b *influxDBStoreBuilder) NewSpanReader() (spanstore.Reader, error) {
 		return nil, err
 	}
 	// TODO: Change this to the writer when we have it
-	return influxstore.NewSpanReader(client), nil
+	return influxstore.NewSpanReader(client, b.conf), nil
 
 }
 

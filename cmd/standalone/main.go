@@ -46,8 +46,10 @@ import (
 	"github.com/uber/jaeger/cmd/collector/app"
 	collector "github.com/uber/jaeger/cmd/collector/app/builder"
 	collectorZipkin "github.com/uber/jaeger/cmd/collector/app/zipkin"
+	infFlags "github.com/uber/jaeger/cmd/flags/influxdb"
 	queryApp "github.com/uber/jaeger/cmd/query/app"
 	query "github.com/uber/jaeger/cmd/query/app/builder"
+	influx "github.com/uber/jaeger/pkg/influxdb/config"
 	pMetrics "github.com/uber/jaeger/pkg/metrics"
 	"github.com/uber/jaeger/pkg/recoveryhandler"
 	"github.com/uber/jaeger/storage/spanstore/memory"
@@ -61,13 +63,17 @@ func main() {
 	metricsFactory := xkit.Wrap("jaeger-standalone", expvar.NewFactory(10))
 	memStore := memory.NewStore()
 
+	influxOptions := infFlags.NewOptions()
+	influxOptions.Bind(flag.CommandLine, "influx")
+
 	flag.Parse()
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
+	influxConf := influxOptions.GetPrimary()
 	startAgent(logger, metricsFactory)
-	startCollector(logger, metricsFactory, memStore)
-	startQuery(logger, metricsFactory, memStore)
+	startCollector(logger, metricsFactory, memStore, influxConf)
+	startQuery(logger, metricsFactory, memStore, influxConf)
 
 	select {}
 }
@@ -101,13 +107,14 @@ func startAgent(logger *zap.Logger, baseFactory metrics.Factory) {
 	}
 }
 
-func startCollector(logger *zap.Logger, baseFactory metrics.Factory, memoryStore *memory.Store) {
+func startCollector(logger *zap.Logger, baseFactory metrics.Factory, memoryStore *memory.Store, c *influx.Configuration) {
 	metricsFactory := baseFactory.Namespace("jaeger-collector", nil)
 
 	spanBuilder, err := collector.NewSpanHandlerBuilder(
 		basic.Options.LoggerOption(logger),
 		basic.Options.MetricsFactoryOption(metricsFactory),
 		basic.Options.MemoryStoreOption(memoryStore),
+		basic.Options.InfluxDBOption(c),
 	)
 	if err != nil {
 		logger.Fatal("Unable to set up builder", zap.Error(err))
@@ -159,13 +166,14 @@ func startZipkinHTTPAPI(logger *zap.Logger, zipkinSpansHandler app.ZipkinSpansHa
 	}
 }
 
-func startQuery(logger *zap.Logger, baseFactory metrics.Factory, memoryStore *memory.Store) {
+func startQuery(logger *zap.Logger, baseFactory metrics.Factory, memoryStore *memory.Store, c *influx.Configuration) {
 	metricsFactory := baseFactory.Namespace("jaeger-query", nil)
 
 	storageBuild, err := query.NewStorageBuilder(
 		basic.Options.LoggerOption(logger),
 		basic.Options.MetricsFactoryOption(metricsFactory),
 		basic.Options.MemoryStoreOption(memoryStore),
+		basic.Options.InfluxDBOption(c),
 	)
 	if err != nil {
 		logger.Fatal("Failed to wire up service", zap.Error(err))

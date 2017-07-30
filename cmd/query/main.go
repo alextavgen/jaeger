@@ -43,8 +43,8 @@ func main() {
 	casOptions := casFlags.NewOptions()
 	casOptions.Bind(flag.CommandLine, "cassandra", "cassandra.archive")
 
-	infOptions := infFlags.NewOptions()
-	infOptions.Bind(flag.CommandLine, "influxdb")
+	influxOptions := infFlags.NewOptions()
+	influxOptions.Bind(flag.CommandLine, "influx")
 
 	flag.Parse()
 
@@ -55,7 +55,7 @@ func main() {
 		basicB.Options.LoggerOption(logger),
 		basicB.Options.MetricsFactoryOption(metricsFactory),
 		basicB.Options.CassandraOption(casOptions.GetPrimary()),
-		basicB.Options.InfluxDBOption(infOptions.GetPrimary()),
+		basicB.Options.InfluxDBOption(influxOptions.GetPrimary()),
 	)
 	if err != nil {
 		logger.Fatal("Failed to init storage builder", zap.Error(err))
