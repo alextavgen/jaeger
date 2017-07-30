@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/influxdata/influxdb/models"
+	influx "github.com/influxdata/influxdb/models"
 	"github.com/uber/jaeger/model"
 	"github.com/uber/jaeger/pkg/influxdb"
 	"github.com/uber/jaeger/pkg/influxdb/config"
@@ -33,6 +33,9 @@ var (
 
 	// ErrIncorrectValueFormat occurs when data from Influx was unexpected type.
 	ErrIncorrectValueFormat = errors.New("Malformed response object")
+
+	// ErrUnknownFields occurs when data from Influx had too many or too few fields
+	ErrUnknownFields = errors.New("Unknown fields in response object")
 )
 
 type SpanReader struct {
@@ -50,21 +53,34 @@ func (s *SpanReader) GetTrace(traceID model.TraceID) (*model.Trace, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	return formatIntoTrace(res), nil
+	if len(res.Results) != 1 || len(res.Results[0].Series) != 1 {
+		return &model.Trace{}, nil
+	}
+	return NewTrace(res.Results[0].Series)
 }
 
-func formatIntoTrace(rows [][]*models.Row) *model.Trace {
-	var spans []*model.Span
-	for _, res := range rows {
-		for _, row := range res {
-			fmt.Println(res, row)
+func NewTrace(series []influx.Row) (*model.Trace, error) {
+	if len(series) == 0 {
+		return &model.Trace{}, nil
+	}
+
+	trace := &model.Trace{}
+	spans := make(map[model.SpanID]Spans)
+	for _, row := range series {
+		for _, value := range row.Values {
+			s, err := NewSpan(row.Tags, row.Columns, value)
+			if err != nil {
+				return nil, err
+			}
+			spans[s.SpanID] = append(spans[s.SpanID], s)
 		}
 	}
 
-	return &model.Trace{
-		Spans: spans,
+	for _, s := range spans {
+		trace.Spans = append(trace.Spans, s.Reduce())
 	}
+
+	return trace, nil
 }
 
 func formatTraceID(t *model.TraceID) string {
@@ -78,8 +94,8 @@ func (s *SpanReader) GetServices() ([]string, error) {
 		return nil, err
 	}
 	services := []string{}
-	for _, r := range res {
-		for _, row := range r {
+	for _, r := range res.Results {
+		for _, row := range r.Series {
 			for _, v := range row.Values {
 				if name, ok := v[1].(string); ok {
 					services = append(services, name)
@@ -98,8 +114,8 @@ func (s *SpanReader) GetOperations(service string) ([]string, error) {
 	}
 
 	names := []string{}
-	for _, r := range res {
-		for _, row := range r {
+	for _, r := range res.Results {
+		for _, row := range r.Series {
 			for _, v := range row.Values {
 				if name, ok := v[1].(string); ok {
 					names = append(names, name)
@@ -132,6 +148,53 @@ func validateQuery(p *spanstore.TraceQueryParameters) error {
 
 type Span struct {
 	*model.Span
+	annotation     string
+	annotation_key string
+}
+
+func NewSpan(tags map[string]string, fields []string, values []interface{}) (*Span, error) {
+	if len(fields) != len(values) {
+		return nil, ErrUnknownFields
+	}
+
+	span := &Span{
+		Span: &model.Span{},
+	}
+	if op, ok := tags["name"]; ok {
+		span.OperationName = op
+	}
+
+	if srv, ok := tags["service_name"]; ok {
+		span.Process = &model.Process{
+			ServiceName: srv,
+		}
+	}
+	if tid, ok := tags["trace_id"]; ok {
+		t, err := model.TraceIDFromString(tid)
+		if err != nil {
+			return nil, err
+		}
+		span.TraceID = t
+	}
+
+	for i := range fields {
+		if err := span.AddField(fields[i], values[i]); err != nil {
+			return nil, err
+		}
+
+	}
+	if span.SpanID == span.ParentSpanID {
+		span.ParentSpanID = model.SpanID(0)
+	} else {
+		span.References = []model.SpanRef{
+			model.SpanRef{
+				RefType: model.ChildOf,
+				TraceID: span.TraceID,
+				SpanID:  span.ParentSpanID,
+			},
+		}
+	}
+	return span, nil
 }
 
 func (s *Span) AddField(column string, value interface{}) error {
@@ -150,17 +213,35 @@ func (s *Span) AddField(column string, value interface{}) error {
 		}
 		s.StartTime = time.Unix(0, t)
 	case "annotation":
-		/*a, ok := value.(string)
+		a, ok := value.(string)
 		if !ok {
 			return ErrIncorrectValueFormat
-		}*/
-		// TODO:
+		}
+		if len(s.Tags) > 0 {
+			s.Tags[0].VStr = a
+		} else {
+			s.Tags = model.KeyValues{
+				model.KeyValue{
+					VStr:  a,
+					VType: model.StringType,
+				},
+			}
+		}
 	case "annotation_key":
-		/*a, ok := value.(string)
+		a, ok := value.(string)
 		if !ok {
 			return ErrIncorrectValueFormat
-		}*/
-	// TODO:
+		}
+		if len(s.Tags) > 0 {
+			s.Tags[0].Key = a
+		} else {
+			s.Tags = model.KeyValues{
+				model.KeyValue{
+					Key:   a,
+					VType: model.StringType,
+				},
+			}
+		}
 	case "duration_ns":
 		n, ok := value.(json.Number)
 		if !ok {
@@ -198,7 +279,7 @@ func (s *Span) AddField(column string, value interface{}) error {
 		if err != nil {
 			return err
 		}
-		s.SpanID = model.SpanID(id)
+		s.ParentSpanID = model.SpanID(id)
 	case "service_name":
 		v, ok := value.(string)
 		if !ok {
@@ -221,20 +302,55 @@ func (s *Span) AddField(column string, value interface{}) error {
 	return nil
 }
 
+func merge(span *Span, elems ...*Span) *Span {
+	for _, e := range elems {
+		for _, tag := range e.Tags {
+			span.Tags = append(span.Tags, tag)
+		}
+		if len(span.References) == 0 && len(e.References) != 0 {
+			span.References = append(span.References, e.References...)
+		}
+	}
+	return span
+}
+
+type Spans []*Span
+
+func (spans Spans) Reduce() *model.Span {
+	switch len(spans) {
+	case 0:
+		return nil
+	case 1:
+		return spans[0].Span
+	default:
+		return merge(spans[0], spans[1:]...).Span
+	}
+}
+
 func (s *SpanReader) FindTraces(q *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
 	if err := validateQuery(q); err != nil {
 		return nil, err
 	}
+	fields := []string{"time", "annotation_key", "annotation", "endpoint_host", "id", "parent_id", "duration_ns"}
+	query := `SELECT %s FROM "zipkin" WHERE "service_name" = '%s' AND time < %d AND time > %d `
+	query = fmt.Sprintf(query, strings.Join(fields, ","), q.ServiceName, q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
 
-	query := `SELECT * FROM "zipkin" WHERE "service_name" = '%s' AND "name" = '%s' AND time < %d AND time > %d `
-	query = fmt.Sprintf(query, q.ServiceName, q.OperationName, q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
-
-	tags := make([]string, len(q.Tags))
+	if q.OperationName != "" {
+		query += fmt.Sprintf(`AND "name" = '%s' `, q.OperationName)
+	}
+	tags := []string{}
 	for k, v := range q.Tags {
+		if k == "" || v == "" {
+			continue
+		}
 		t := fmt.Sprintf(`("annotation_key" = '%s' AND "annotation" = '%s')`, k, v)
 		tags = append(tags, t)
 	}
-	if len(tags) > 0 {
+
+	switch len(tags) {
+	case 1:
+		query += fmt.Sprintf(" AND %s", tags[0])
+	case 2:
 		query += fmt.Sprintf(" AND (%s)", strings.Join(tags, " OR "))
 	}
 
@@ -246,80 +362,29 @@ func (s *SpanReader) FindTraces(q *spanstore.TraceQueryParameters) ([]*model.Tra
 		query += fmt.Sprintf(` AND "duration" <= %d `, q.DurationMax.Nanoseconds())
 	}
 
+	query += ` GROUP BY "service_name", "name", "trace_id" `
+
 	if q.NumTraces > 0 {
-		query += fmt.Sprintf(" LIMIT %d", q.NumTraces)
+		query += fmt.Sprintf(" SLIMIT %d", q.NumTraces)
 	}
 
+	//fmt.Printf("\n\n*** query %s***\n\n", query)
 	res, err := s.client.QuerySpans(query, s.conf.Database)
 	if err != nil {
 		return nil, err
 	}
 
-	trace := &model.Trace{}
-	for _, r := range res {
-		for _, row := range r {
-			columns := map[int]string{}
-			for i, c := range row.Columns {
-				columns[i] = c
-			}
-			for _, values := range row.Values {
-				s := &Span{
-					Span: &model.Span{},
-				}
-				// TODO: each span needs to be gathered up into an existing trace and/or span
-				for i, v := range values {
-					column := columns[i]
-					if column == "annotation" || column == "annotation_key" {
-						continue
-					}
-					if err := s.AddField(column, v); err != nil {
-						return nil, err
-					}
-				}
-				trace.Spans = append(trace.Spans, s.Span)
-			}
+	traces := []*model.Trace{}
+	for _, result := range res.Results {
+		trace, err := NewTrace(result.Series)
+		if err != nil {
+			return nil, err
 		}
+		traces = append(traces, trace)
 	}
-	if len(trace.Spans) > 0 {
-		return []*model.Trace{trace}, nil
-	}
-	return []*model.Trace{}, nil
-	t := &model.Trace{
-		Spans: []*model.Span{
-			&model.Span{
-				TraceID: model.TraceID{
-					Low:  uint64(0),
-					High: uint64(0),
-				},
-				SpanID:        model.SpanID(1),
-				ParentSpanID:  model.SpanID(0),
-				OperationName: "operation_name",
-				Process: &model.Process{
-					ServiceName: "service",
-				},
-				References: []model.SpanRef{
-					model.SpanRef{
-						RefType: model.ChildOf,
-						TraceID: model.TraceID{
-							Low:  uint64(0),
-							High: uint64(0),
-						},
-						SpanID: model.SpanID(0),
-					},
-				},
-				StartTime: time.Now().UTC().Add(-time.Minute),
-				Duration:  time.Second,
-				Tags: model.KeyValues{
-					model.KeyValue{
-						Key:   "mykey",
-						VType: model.StringType,
-						VStr:  "myvalue",
-					},
-				},
-			},
-		},
-	}
-	return []*model.Trace{t}, nil
+	//b, _ := json.MarshalIndent(traces, "", "    ")
+	//fmt.Printf("\n\n%s\n\n", string(b))
+	return traces, nil
 }
 
 func (s *SpanReader) WriteSpan(span *model.Span) error {
