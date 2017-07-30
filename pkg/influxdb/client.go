@@ -1,9 +1,11 @@
 package influxdb
 
-import "github.com/uber/jaeger/model"
-import "github.com/influxdata/influxdb/models"
+import (
+	influxclient "github.com/influxdata/influxdb/client/v2"
+	"github.com/uber/jaeger/model"
+)
 
 type Client interface {
 	WriteSpans([]*model.Span) error
-	QuerySpans(string, string) ([][]*models.Row, error)
+	QuerySpans(string, string) (*influxclient.Response, error)
 }
