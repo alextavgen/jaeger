@@ -148,8 +148,6 @@ func validateQuery(p *spanstore.TraceQueryParameters) error {
 
 type Span struct {
 	*model.Span
-	annotation     string
-	annotation_key string
 }
 
 func NewSpan(tags map[string]string, fields []string, values []interface{}) (*Span, error) {
@@ -310,6 +308,14 @@ func merge(span *Span, elems ...*Span) *Span {
 		if len(span.References) == 0 && len(e.References) != 0 {
 			span.References = append(span.References, e.References...)
 		}
+		if span.Process == nil && e.Process != nil {
+			span.Process = e.Process
+		} else if span.Process != nil && e.Process != nil {
+			span.Process.Tags = append(span.Process.Tags, e.Process.Tags...)
+			if span.Process.ServiceName != e.Process.ServiceName {
+				fmt.Printf("DIFFERent NAME %s\n", span.Process.ServiceName)
+			}
+		}
 	}
 	return span
 }
@@ -331,9 +337,12 @@ func (s *SpanReader) FindTraces(q *spanstore.TraceQueryParameters) ([]*model.Tra
 	if err := validateQuery(q); err != nil {
 		return nil, err
 	}
-	fields := []string{"time", "annotation_key", "annotation", "endpoint_host", "id", "parent_id", "duration_ns"}
-	query := `SELECT %s FROM "zipkin" WHERE "service_name" = '%s' AND time < %d AND time > %d `
-	query = fmt.Sprintf(query, strings.Join(fields, ","), q.ServiceName, q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
+	fields := []string{"time", "service_name", `"name"`, "annotation_key", "annotation", "endpoint_host", "id", "parent_id", "duration_ns"}
+	query := `SELECT %s FROM "zipkin" WHERE  time < %d AND time > %d `
+	query = fmt.Sprintf(query, strings.Join(fields, ","), q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
+
+	//	query := `SELECT %s FROM "zipkin" WHERE "service_name" = '%s' AND time < %d AND time > %d `
+	//query = fmt.Sprintf(query, strings.Join(fields, ","), q.ServiceName, q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
 
 	if q.OperationName != "" {
 		query += fmt.Sprintf(`AND "name" = '%s' `, q.OperationName)
@@ -362,28 +371,36 @@ func (s *SpanReader) FindTraces(q *spanstore.TraceQueryParameters) ([]*model.Tra
 		query += fmt.Sprintf(` AND "duration" <= %d `, q.DurationMax.Nanoseconds())
 	}
 
-	query += ` GROUP BY "service_name", "name", "trace_id" `
+	//query += ` GROUP BY "service_name", "name", "trace_id" `
+	query += ` GROUP BY "trace_id" `
 
 	if q.NumTraces > 0 {
 		query += fmt.Sprintf(" SLIMIT %d", q.NumTraces)
 	}
 
-	//fmt.Printf("\n\n*** query %s***\n\n", query)
+	fmt.Printf("\n\n*** query %s***\n\n", query)
 	res, err := s.client.QuerySpans(query, s.conf.Database)
 	if err != nil {
 		return nil, err
 	}
-
+	fmt.Printf("RES\n\n%#+v\n\n\n\n******\n", res)
 	traces := []*model.Trace{}
 	for _, result := range res.Results {
 		trace, err := NewTrace(result.Series)
 		if err != nil {
 			return nil, err
 		}
-		traces = append(traces, trace)
+		if len(trace.Spans) > 0 {
+			traces = append(traces, trace)
+		}
 	}
-	//b, _ := json.MarshalIndent(traces, "", "    ")
-	//fmt.Printf("\n\n%s\n\n", string(b))
+
+	// webui seems to hang forever (stack) if this isn't nil
+	if len(traces) == 0 {
+		return nil, nil
+	}
+	b, _ := json.MarshalIndent(traces, "", "    ")
+	fmt.Printf("\n\n%s\n\n", string(b))
 	return traces, nil
 }
 
