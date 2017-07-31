@@ -65,19 +65,27 @@ func NewTrace(series []influx.Row) (*model.Trace, error) {
 	}
 
 	trace := &model.Trace{}
-	spans := make(map[model.SpanID]Spans)
+	spans := make(map[model.SpanID]map[string]Spans)
 	for _, row := range series {
 		for _, value := range row.Values {
 			s, err := NewSpan(row.Tags, row.Columns, value)
 			if err != nil {
 				return nil, err
 			}
-			spans[s.SpanID] = append(spans[s.SpanID], s)
+			if s.Process == nil {
+				continue
+			}
+			if _, ok := spans[s.SpanID]; !ok {
+				spans[s.SpanID] = make(map[string]Spans)
+			}
+			spans[s.SpanID][s.Process.ServiceName] = append(spans[s.SpanID][s.Process.ServiceName], s)
 		}
 	}
 
-	for _, s := range spans {
-		trace.Spans = append(trace.Spans, s.Reduce())
+	for _, span := range spans {
+		for _, s := range span {
+			trace.Spans = append(trace.Spans, s.Reduce())
+		}
 	}
 
 	return trace, nil
@@ -179,7 +187,6 @@ func NewSpan(tags map[string]string, fields []string, values []interface{}) (*Sp
 		if err := span.AddField(fields[i], values[i]); err != nil {
 			return nil, err
 		}
-
 	}
 	if span.SpanID == span.ParentSpanID {
 		span.ParentSpanID = model.SpanID(0)
@@ -415,10 +422,8 @@ func NewSpanReader(client influxdb.Client, conf *config.Configuration) *SpanRead
 	}
 }
 
-/*
-
 // GetDependencies loads service dependencies from influx.
-func (s *Store) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
+/*func (s *Store) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
 	end := endTs.UTC().UnixNano()
 	start := endTs.Add(-lookback).UTC().UnixNano()
 	group := lookback.String()
@@ -441,6 +446,4 @@ func (s *Store) GetDependencies(endTs time.Time, lookback time.Duration) ([]mode
 		}
 	}
 	return nil, nil
-}
-
-*/
+}*/
