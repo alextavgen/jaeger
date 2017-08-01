@@ -36,8 +36,12 @@ func (b *influxDBStoreBuilder) NewSpanReader() (spanstore.Reader, error) {
 
 }
 
-func (s *influxDBStoreBuilder) NewDependencyReader() (dependencystore.Reader, error) {
-	return nil, nil
+func (b *influxDBStoreBuilder) NewDependencyReader() (dependencystore.Reader, error) {
+	client, err := b.getClient()
+	if err != nil {
+		return nil, err
+	}
+	return influxstore.NewSpanReader(client, b.configuration), nil
 }
 
 func (s *influxDBStoreBuilder) getClient() (influxdb.Client, error) {
