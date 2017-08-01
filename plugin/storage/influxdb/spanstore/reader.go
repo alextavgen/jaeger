@@ -423,27 +423,51 @@ func NewSpanReader(client influxdb.Client, conf *config.Configuration) *SpanRead
 }
 
 // GetDependencies loads service dependencies from influx.
-/*func (s *Store) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
+func (s *SpanReader) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
 	end := endTs.UTC().UnixNano()
 	start := endTs.Add(-lookback).UTC().UnixNano()
-	group := lookback.String()
 
-	query := fmt.Sprintf(`SELECT COUNT("duration") FROM "zipkin" WHERE  time > %d AND time < %d AND annotation='' GROUP BY "id","parent_id",time(%s)`, start, end, group)
-	res, err := s.client.Query(influxdb.Query{
-		Command:  query,
-		Database: "telegraf",
-	})
+	query := fmt.Sprintf(`SELECT COUNT("duration_ns") FROM "zipkin" WHERE  time > %d AND time < %d AND annotation='' GROUP BY "id","parent_id", "service_name"`, start, end)
+	fmt.Printf("Query: %s endTs.String(): %s, lookback.String(): %s\n", query, endTs.String(), lookback.String())
+	res, err := s.client.QuerySpans(query, s.conf.Database)
+	fmt.Printf("Response: %#+v\n", res)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := res.Error(); err != nil {
-		return nil, err
-	}
+	services := make(map[string]string)
 
-	for i, result := range res.Results {
-		for j, series := range result.Series {
+	for _, result := range res.Results {
+		for _, series := range result.Series {
+			id := series.Tags["id"]
+			srv := series.Tags["service_name"]
+			services[id] = srv
 		}
 	}
-	return nil, nil
-}*/
+
+	deps := make([]model.DependencyLink, 0)
+	for _, result := range res.Results {
+		for _, series := range result.Series {
+			srv := series.Tags["service_name"]
+			pid := series.Tags["parent_id"]
+			psrv := services[pid]
+			for _, r := range series.Values {
+				raw, ok := r[1].(json.Number)
+				if !ok {
+					return nil, ErrIncorrectValueFormat
+				}
+				count, err := raw.Int64()
+				if err != nil {
+					return nil, ErrIncorrectValueFormat
+				}
+				d := model.DependencyLink{
+					Parent:    psrv,
+					Child:     srv,
+					CallCount: uint64(count),
+				}
+				deps = append(deps, d)
+			}
+		}
+	}
+	return deps, nil
+}
