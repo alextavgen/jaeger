@@ -1,18 +1,24 @@
 package spanstore
 
 import (
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
 
 	influx "github.com/influxdata/influxdb/models"
-	"github.com/jaegertracing/jaeger/pkg/es/config"
+	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/pkg/influxdb"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
-	"github.com/uber/jaeger/model"
+)
+
+const (
+	GetTraceQueryTemplate = `SELECT * FROM "%s" WHERE "trace_id" = '%s'`
 )
 
 var (
@@ -40,17 +46,23 @@ var (
 
 type SpanReader struct {
 	client       influxdb.Client
-	conf         *config.Configuration
 	databaseName string
+	rp           string
+	measurement  string
 }
 
-const (
-	GetTraceQueryTemplate = `SELECT * FROM "%s" WHERE "trace_id" = '%s'`
-)
+func NewSpanReader(client influxdb.Client, db, rp, measurement string) *SpanReader {
+	return &SpanReader{
+		client:       client,
+		databaseName: db,
+		rp:           rp,
+		measurement:  measurement,
+	}
+}
 
-func (s *SpanReader) GetTrace(traceID model.TraceID) (*model.Trace, error) {
-	query := fmt.Sprintf(GetTraceQueryTemplate, s.databaseName, traceID.String())
-	res, err := s.client.QuerySpans(query, s.conf.Database)
+func (s *SpanReader) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Trace, error) {
+	query := fmt.Sprintf(GetTraceQueryTemplate, s.measurement, traceID.String())
+	res, err := s.client.QuerySpans(query, s.databaseName)
 	if err != nil {
 		return nil, err
 	}
@@ -96,9 +108,9 @@ func formatTraceID(t *model.TraceID) string {
 	return strconv.FormatUint(t.High, 10) + ":" + strconv.FormatUint(t.Low, 10)
 }
 
-func (s *SpanReader) GetServices() ([]string, error) {
-	query := `SHOW TAG VALUES FROM "zipkin" WITH KEY = "service_name"`
-	res, err := s.client.QuerySpans(query, s.conf.Database)
+func (s *SpanReader) GetServices(ctx context.Context) ([]string, error) {
+	query := fmt.Sprintf(`SHOW TAG VALUES FROM "%s" WITH KEY = "service_name"`, s.measurement)
+	res, err := s.client.QuerySpans(query, s.databaseName)
 	if err != nil {
 		return nil, err
 	}
@@ -115,9 +127,9 @@ func (s *SpanReader) GetServices() ([]string, error) {
 	return services, nil
 }
 
-func (s *SpanReader) GetOperations(service string) ([]string, error) {
-	query := fmt.Sprintf(`SHOW TAG VALUES FROM "zipkin" with key="name" WHERE "service_name" = '%s'`, service)
-	res, err := s.client.QuerySpans(query, s.conf.Database)
+func (s *SpanReader) GetOperations(ctx context.Context, service string) ([]string, error) {
+	query := fmt.Sprintf(`SHOW TAG VALUES FROM "%s" with key="name" WHERE "service_name" = '%s'`, s.measurement, service)
+	res, err := s.client.QuerySpans(query, s.databaseName)
 	if err != nil {
 		return nil, err
 	}
@@ -189,14 +201,14 @@ func NewSpan(tags map[string]string, fields []string, values []interface{}) (*Sp
 			return nil, err
 		}
 	}
-	if span.SpanID == span.ParentSpanID {
-		span.ParentSpanID = model.SpanID(0)
+	if span.SpanID == span.ParentSpanID() {
+		span.ReplaceParentID(model.SpanID(0))
 	} else {
 		span.References = []model.SpanRef{
 			model.SpanRef{
 				RefType: model.ChildOf,
 				TraceID: span.TraceID,
-				SpanID:  span.ParentSpanID,
+				SpanID:  span.ParentSpanID(),
 			},
 		}
 	}
@@ -261,6 +273,24 @@ func (s *Span) AddField(column string, value interface{}) error {
 	case "endpoint_host":
 		// TODO: what is this going to be?
 	case "id":
+		// TODO: zipkin uses HEX and int, we need to understand how to detect and decode both of them
+		v, ok := value.(string)
+		if !ok {
+			return ErrIncorrectValueFormat
+		}
+		src := []byte(v)
+
+		dst := make([]byte, hex.DecodedLen(len(src)))
+		n, err := hex.Decode(dst, src)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err != nil {
+			return err
+		}
+		s.SpanID = model.SpanID(n)
+	case "parent_id":
+		// TODO: same about HEX id as id
 		v, ok := value.(string)
 		if !ok {
 			return ErrIncorrectValueFormat
@@ -269,23 +299,13 @@ func (s *Span) AddField(column string, value interface{}) error {
 		if err != nil {
 			return err
 		}
-		s.SpanID = model.SpanID(id)
+		s.ReplaceParentID(model.SpanID(id))
 	case "name":
 		v, ok := value.(string)
 		if !ok {
 			return ErrIncorrectValueFormat
 		}
 		s.OperationName = v
-	case "parent_id":
-		v, ok := value.(string)
-		if !ok {
-			return ErrIncorrectValueFormat
-		}
-		id, err := strconv.ParseUint(v, 10, 64)
-		if err != nil {
-			return err
-		}
-		s.ParentSpanID = model.SpanID(id)
 	case "service_name":
 		v, ok := value.(string)
 		if !ok {
@@ -341,16 +361,13 @@ func (spans Spans) Reduce() *model.Span {
 	}
 }
 
-func (s *SpanReader) FindTraces(q *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
+func (s *SpanReader) FindTraces(ctx context.Context, q *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
 	if err := validateQuery(q); err != nil {
 		return nil, err
 	}
 	fields := []string{"time", "service_name", `"name"`, "annotation_key", "annotation", "endpoint_host", "id", "parent_id", "duration_ns"}
-	query := `SELECT %s FROM "zipkin" WHERE  time < %d AND time > %d `
-	query = fmt.Sprintf(query, strings.Join(fields, ","), q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
-
-	//	query := `SELECT %s FROM "zipkin" WHERE "service_name" = '%s' AND time < %d AND time > %d `
-	//query = fmt.Sprintf(query, strings.Join(fields, ","), q.ServiceName, q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
+	query := `SELECT %s FROM "%s" WHERE  time < %d AND time > %d `
+	query = fmt.Sprintf(query, strings.Join(fields, ","), s.measurement, q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
 
 	if q.OperationName != "" {
 		query += fmt.Sprintf(`AND "name" = '%s' `, q.OperationName)
@@ -372,11 +389,11 @@ func (s *SpanReader) FindTraces(q *spanstore.TraceQueryParameters) ([]*model.Tra
 	}
 
 	if q.DurationMin != 0 {
-		query += fmt.Sprintf(` AND "duration" >= %d `, q.DurationMin.Nanoseconds())
+		query += fmt.Sprintf(` AND "duration_ns" >= %d `, q.DurationMin.Nanoseconds())
 	}
 
 	if q.DurationMax != 0 {
-		query += fmt.Sprintf(` AND "duration" <= %d `, q.DurationMax.Nanoseconds())
+		query += fmt.Sprintf(` AND "duration_ns" <= %d `, q.DurationMax.Nanoseconds())
 	}
 
 	//query += ` GROUP BY "service_name", "name", "trace_id" `
@@ -386,12 +403,10 @@ func (s *SpanReader) FindTraces(q *spanstore.TraceQueryParameters) ([]*model.Tra
 		query += fmt.Sprintf(" SLIMIT %d", q.NumTraces)
 	}
 
-	fmt.Printf("\n\n*** query %s***\n\n", query)
-	res, err := s.client.QuerySpans(query, s.conf.Database)
+	res, err := s.client.QuerySpans(query, s.databaseName)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("RES\n\n%#+v\n\n\n\n******\n", res)
 	traces := []*model.Trace{}
 	for _, result := range res.Results {
 		trace, err := NewTrace(result.Series)
@@ -402,25 +417,12 @@ func (s *SpanReader) FindTraces(q *spanstore.TraceQueryParameters) ([]*model.Tra
 			traces = append(traces, trace)
 		}
 	}
-
 	// webui seems to hang forever (stack) if this isn't nil
+	// TODO: check it again
 	if len(traces) == 0 {
 		return nil, nil
 	}
-	b, _ := json.MarshalIndent(traces, "", "    ")
-	fmt.Printf("\n\n%s\n\n", string(b))
 	return traces, nil
-}
-
-func (s *SpanReader) WriteSpan(span *model.Span) error {
-	return nil
-}
-
-func NewSpanReader(client influxdb.Client, conf *config.Configuration) *SpanReader {
-	return &SpanReader{
-		client: client,
-		conf:   conf,
-	}
 }
 
 // GetDependencies loads service dependencies from influx.
@@ -428,10 +430,8 @@ func (s *SpanReader) GetDependencies(endTs time.Time, lookback time.Duration) ([
 	end := endTs.UTC().UnixNano()
 	start := endTs.Add(-lookback).UTC().UnixNano()
 
-	query := fmt.Sprintf(`SELECT COUNT("duration_ns") FROM "zipkin" WHERE  time > %d AND time < %d AND annotation='' GROUP BY "id","parent_id", "service_name"`, start, end)
-	fmt.Printf("Query: %s endTs.String(): %s, lookback.String(): %s\n", query, endTs.String(), lookback.String())
-	res, err := s.client.QuerySpans(query, s.conf.Database)
-	fmt.Printf("Response: %#+v\n", res)
+	query := fmt.Sprintf(`SELECT COUNT("duration_ns") FROM "%s" WHERE  time > %d AND time < %d AND annotation='' GROUP BY "id","parent_id", "service_name"`, s.measurement, start, end)
+	res, err := s.client.QuerySpans(query, s.databaseName)
 	if err != nil {
 		return nil, err
 	}

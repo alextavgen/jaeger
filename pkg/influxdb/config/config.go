@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	influxclient "github.com/influxdata/influxdb/client/v2"
-	"github.com/uber/jaeger/pkg/influxdb"
+	"github.com/jaegertracing/jaeger/pkg/influxdb"
 )
 
 /*type InfluxConnectionType int
