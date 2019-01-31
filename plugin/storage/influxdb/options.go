@@ -11,49 +11,38 @@ const (
 )
 
 type Options struct {
-	username            string
-	host                string
-	password            string
-	database            string
-	spanMeasurementName string
-	connectionType      string
+	host         string
+	token        string
+	bucket       string
+	organization string
 }
 
 // AddFlags adds flags for Options
 func (opt *Options) AddFlags(flagSet *flag.FlagSet) {
 	flagSet.String(
-		configPrefix+"connection_type",
-		"http",
-		"http or udp")
-	flagSet.String(
-		configPrefix+"span_measurement_name",
-		"spans",
-		"the name of the measurement where spans are stored")
-	flagSet.String(
-		configPrefix+"username",
-		"",
-		"the username to authenticate against the influxdb server")
-	flagSet.String(
 		configPrefix+"host",
-		"http://127.0.0.1:8086",
-		"where is influxdb?")
+		"http://127.0.0.1:9999",
+		"where is platform?")
 	flagSet.String(
-		configPrefix+"password",
+		configPrefix+"token",
 		"",
-		"the password to authenticate against the influxdb server")
+		"the token to authenticate against the platform server")
 	flagSet.String(
-		configPrefix+"database",
+		configPrefix+"bucket",
 		"jaeger",
 		"database name",
+	)
+	flagSet.String(
+		configPrefix+"organization",
+		"jaeger",
+		"organization name",
 	)
 }
 
 // InitFromViper initializes Options with properties from viper
 func (opt *Options) InitFromViper(v *viper.Viper) {
-	opt.username = v.GetString(configPrefix + "username")
 	opt.host = v.GetString(configPrefix + "host")
-	opt.password = v.GetString(configPrefix + "password")
-	opt.database = v.GetString(configPrefix + "database")
-	opt.connectionType = v.GetString(configPrefix + "connection_type")
-	opt.spanMeasurementName = v.GetString(configPrefix + "span_measurement_name")
+	opt.token = v.GetString(configPrefix + "token")
+	opt.bucket = v.GetString(configPrefix + "bucket")
+	opt.organization = v.GetString(configPrefix + "organization")
 }

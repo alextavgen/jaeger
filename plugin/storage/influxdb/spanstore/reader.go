@@ -8,18 +8,13 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"strings"
 	"time"
 
-	influx "github.com/influxdata/influxdb/models"
 	"github.com/jaegertracing/jaeger/model"
-	"github.com/jaegertracing/jaeger/pkg/influxdb"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
 )
 
-const (
-	GetTraceQueryTemplate = `SELECT * FROM "%s" WHERE "trace_id" = '%s'`
-)
+const ()
 
 var (
 	// ErrServiceNameNotSet occurs when attempting to query with an empty service name
@@ -45,126 +40,24 @@ var (
 )
 
 type SpanReader struct {
-	client       influxdb.Client
-	databaseName string
-	rp           string
-	measurement  string
 }
 
-func NewSpanReader(client influxdb.Client, db, rp, measurement string) *SpanReader {
-	return &SpanReader{
-		client:       client,
-		databaseName: db,
-		rp:           rp,
-		measurement:  measurement,
-	}
+func NewSpanReader() *SpanReader {
+	return &SpanReader{}
 }
 
 func (s *SpanReader) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Trace, error) {
-	query := fmt.Sprintf(GetTraceQueryTemplate, s.measurement, traceID.String())
-	res, err := s.client.QuerySpans(query, s.databaseName)
-	if err != nil {
-		return nil, err
-	}
-	if len(res.Results) != 1 || len(res.Results[0].Series) != 1 {
-		return &model.Trace{}, nil
-	}
-	return NewTrace(res.Results[0].Series)
-}
-
-func NewTrace(series []influx.Row) (*model.Trace, error) {
-	if len(series) == 0 {
-		return &model.Trace{}, nil
-	}
-
-	trace := &model.Trace{}
-	spans := make(map[model.SpanID]map[string]Spans)
-	for _, row := range series {
-		for _, value := range row.Values {
-			s, err := NewSpan(row.Tags, row.Columns, value)
-			if err != nil {
-				return nil, err
-			}
-			if s.Process == nil {
-				continue
-			}
-			if _, ok := spans[s.SpanID]; !ok {
-				spans[s.SpanID] = make(map[string]Spans)
-			}
-			spans[s.SpanID][s.Process.ServiceName] = append(spans[s.SpanID][s.Process.ServiceName], s)
-		}
-	}
-
-	for _, span := range spans {
-		for _, s := range span {
-			trace.Spans = append(trace.Spans, s.Reduce())
-		}
-	}
-
-	return trace, nil
-}
-
-func formatTraceID(t *model.TraceID) string {
-	return strconv.FormatUint(t.High, 10) + ":" + strconv.FormatUint(t.Low, 10)
+	return &model.Trace{}, nil
 }
 
 func (s *SpanReader) GetServices(ctx context.Context) ([]string, error) {
-	query := fmt.Sprintf(`SHOW TAG VALUES FROM "%s" WITH KEY = "service_name"`, s.measurement)
-	res, err := s.client.QuerySpans(query, s.databaseName)
-	if err != nil {
-		return nil, err
-	}
 	services := []string{}
-	for _, r := range res.Results {
-		for _, row := range r.Series {
-			for _, v := range row.Values {
-				if name, ok := v[1].(string); ok {
-					services = append(services, name)
-				}
-			}
-		}
-	}
 	return services, nil
 }
 
 func (s *SpanReader) GetOperations(ctx context.Context, service string) ([]string, error) {
-	query := fmt.Sprintf(`SHOW TAG VALUES FROM "%s" with key="name" WHERE "service_name" = '%s'`, s.measurement, service)
-	res, err := s.client.QuerySpans(query, s.databaseName)
-	if err != nil {
-		return nil, err
-	}
-
 	names := []string{}
-	for _, r := range res.Results {
-		for _, row := range r.Series {
-			for _, v := range row.Values {
-				if name, ok := v[1].(string); ok {
-					names = append(names, name)
-				}
-			}
-		}
-	}
 	return names, nil
-}
-
-func validateQuery(p *spanstore.TraceQueryParameters) error {
-	if p == nil {
-		return ErrMalformedRequestObject
-	}
-	if p.ServiceName == "" && len(p.Tags) > 0 {
-		return ErrServiceNameNotSet
-	}
-	if p.StartTimeMin.IsZero() || p.StartTimeMax.IsZero() {
-		return ErrStartAndEndTimeNotSet
-	}
-	if !p.StartTimeMin.IsZero() && !p.StartTimeMax.IsZero() && p.StartTimeMax.Before(p.StartTimeMin) {
-		return ErrStartTimeMinGreaterThanMax
-	}
-	if p.DurationMin != 0 && p.DurationMax != 0 && p.DurationMin > p.DurationMax {
-		return ErrDurationMinGreaterThanMax
-	}
-
-	return nil
 }
 
 type Span struct {
@@ -362,121 +255,16 @@ func (spans Spans) Reduce() *model.Span {
 }
 
 func (s *SpanReader) FindTraces(ctx context.Context, q *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
-	if err := validateQuery(q); err != nil {
-		return nil, err
-	}
-	fields := []string{"time", "service_name", `"name"`, "annotation_key", "annotation", "endpoint_host", "id", "parent_id", "duration_ns"}
-	query := `SELECT %s FROM "%s" WHERE  time < %d AND time > %d `
-	query = fmt.Sprintf(query, strings.Join(fields, ","), s.measurement, q.StartTimeMax.UTC().UnixNano(), q.StartTimeMin.UTC().UnixNano())
-
-	if q.OperationName != "" {
-		query += fmt.Sprintf(`AND "name" = '%s' `, q.OperationName)
-	}
-	tags := []string{}
-	for k, v := range q.Tags {
-		if k == "" || v == "" {
-			continue
-		}
-		t := fmt.Sprintf(`("annotation_key" = '%s' AND "annotation" = '%s')`, k, v)
-		tags = append(tags, t)
-	}
-
-	switch len(tags) {
-	case 1:
-		query += fmt.Sprintf(" AND %s", tags[0])
-	case 2:
-		query += fmt.Sprintf(" AND (%s)", strings.Join(tags, " OR "))
-	}
-
-	if q.DurationMin != 0 {
-		query += fmt.Sprintf(` AND "duration_ns" >= %d `, q.DurationMin.Nanoseconds())
-	}
-
-	if q.DurationMax != 0 {
-		query += fmt.Sprintf(` AND "duration_ns" <= %d `, q.DurationMax.Nanoseconds())
-	}
-
-	//query += ` GROUP BY "service_name", "name", "trace_id" `
-	query += ` GROUP BY "trace_id" `
-
-	if q.NumTraces > 0 {
-		query += fmt.Sprintf(" SLIMIT %d", q.NumTraces)
-	}
-
-	res, err := s.client.QuerySpans(query, s.databaseName)
-	if err != nil {
-		return nil, err
-	}
 	traces := []*model.Trace{}
-	for _, result := range res.Results {
-		trace, err := NewTrace(result.Series)
-		if err != nil {
-			return nil, err
-		}
-		if len(trace.Spans) > 0 {
-			traces = append(traces, trace)
-		}
-	}
-	// webui seems to hang forever (stack) if this isn't nil
-	// TODO: check it again
-	if len(traces) == 0 {
-		return nil, nil
-	}
 	return traces, nil
 }
 
 func (s *SpanReader) FindTraceIDs(ctx context.Context, q *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
-	if err := validateQuery(q); err != nil {
-		return nil, err
-	}
-	// TODO: use common library to actually find trace ids
 	return nil, nil
 }
 
 // GetDependencies loads service dependencies from influx.
 func (s *SpanReader) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
-	end := endTs.UTC().UnixNano()
-	start := endTs.Add(-lookback).UTC().UnixNano()
-
-	query := fmt.Sprintf(`SELECT COUNT("duration_ns") FROM "%s" WHERE  time > %d AND time < %d AND annotation='' GROUP BY "id","parent_id", "service_name"`, s.measurement, start, end)
-	res, err := s.client.QuerySpans(query, s.databaseName)
-	if err != nil {
-		return nil, err
-	}
-
-	services := make(map[string]string)
-
-	for _, result := range res.Results {
-		for _, series := range result.Series {
-			id := series.Tags["id"]
-			srv := series.Tags["service_name"]
-			services[id] = srv
-		}
-	}
-
 	deps := make([]model.DependencyLink, 0)
-	for _, result := range res.Results {
-		for _, series := range result.Series {
-			srv := series.Tags["service_name"]
-			pid := series.Tags["parent_id"]
-			psrv := services[pid]
-			for _, r := range series.Values {
-				raw, ok := r[1].(json.Number)
-				if !ok {
-					return nil, ErrIncorrectValueFormat
-				}
-				count, err := raw.Int64()
-				if err != nil {
-					return nil, ErrIncorrectValueFormat
-				}
-				d := model.DependencyLink{
-					Parent:    psrv,
-					Child:     srv,
-					CallCount: uint64(count),
-				}
-				deps = append(deps, d)
-			}
-		}
-	}
 	return deps, nil
 }
