@@ -425,6 +425,14 @@ func (s *SpanReader) FindTraces(ctx context.Context, q *spanstore.TraceQueryPara
 	return traces, nil
 }
 
+func (s *SpanReader) FindTraceIDs(ctx context.Context, q *spanstore.TraceQueryParameters) ([]model.TraceID, error) {
+	if err := validateQuery(q); err != nil {
+		return nil, err
+	}
+	// TODO: use common library to actually find trace ids
+	return nil, nil
+}
+
 // GetDependencies loads service dependencies from influx.
 func (s *SpanReader) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
 	end := endTs.UTC().UnixNano()
